@@ -1,0 +1,171 @@
+# =============================================================================
+# Phase-field fracture run configuration (quasi-static).
+#
+# load_factor ramps 0 -> 1 in [run].N_steps equal increments. Each increment
+# is solved to Newton equilibrium; the crack-driving history field is raised
+# after every converged step so the crack cannot heal.
+#
+# Units: lengths in mm, stresses in MPa, Gc in N/mm.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Mesh / specimen geometry
+# -----------------------------------------------------------------------------
+[mesh]
+W         = 100.0
+H         = 40.0
+a         = 50.0
+# y_crack defaults to H/2 when omitted.
+
+# h_fine - h_far mesh size near and far the selected physical group 
+h_fine    = 0.05
+h_far     = 1
+
+# distance of mesh refinment 
+r_fine    = 1.0
+r_far     = 10.0
+
+base_name = "cracked_specimen"
+
+# -----------------------------------------------------------------------------
+# FEM problem-level constants
+# -----------------------------------------------------------------------------
+[fem]
+ntype = 1     # 1 = plane stress, 2 = plane strain
+ndofn = 2     # deggres of freedom dispacement field only
+ngaus = 2     # Gauss point per direction   
+nstre = 3
+
+# Strain-energy split -- which part of the elastic energy the phase field is
+# allowed to degrade. The phase field is driven by the "positive" energy psi+:
+#
+#   "none"      psi+ = full energy. The whole stress is degraded by g(phi).
+#   "lancioni"  psi+ = deviatoric energy only (Lancioni & Royer-Carfagni).
+#               The volumetric energy is never degraded, in tension OR
+#               compression.
+#   "amor"      psi+ = deviatoric + tensile-volumetric energy (Amor, Marigo,
+#               Maurini). Only compressive volumetric energy is protected.
+#   "spectral"  psi+ from the positive eigen-strains of eps (Miehe et al.).
+#               The most faithful tension/compression split.
+#
+# Default is "amor" when omitted.
+energy_split = "amor"
+
+# -----------------------------------------------------------------------------
+# Material library.
+#
+# props is an ordered list { E, nu, Gc, l0, k }:
+#     E  -- Young's modulus           (MPa)
+#     nu -- Poisson's ratio           (-)
+#     Gc -- critical energy release   (N/mm)
+#     l0 -- phase-field length scale  (mm)
+#     k  -- residual stiffness factor (-)
+# -----------------------------------------------------------------------------
+[[materials]]
+name  = "test"
+props = [ 32000.0, 0.2, 0.003, 0.25, 1.0e-6 ]
+
+[[material_for_group]]
+group    = "Domain"
+material = "test"
+
+# -----------------------------------------------------------------------------
+# Dirichlet boundary conditions
+# -----------------------------------------------------------------------------
+[[bcs]]
+physical_name = "Bottom"
+flags         = [1, 1]
+values        = [0.0, 0.0]
+
+[[bcs]]
+physical_name = "Top"
+flags         = [1, 1]
+values        = [0.0, 0.035]    # applied uy in mm at full load
+
+# -----------------------------------------------------------------------------
+# Neumann boundary conditions (surface tractions). OPTIONAL.
+#
+#   physical_name -- gmsh physical-group name (1D)
+#   traction      -- length-ndofn force per unit edge length [tx, ty] in N/mm.
+#                    Multiplied by load_factor each step.
+# -----------------------------------------------------------------------------
+# [[neumann]]
+# physical_name = "Top"
+# traction      = [0.0, 0.4]
+
+# -----------------------------------------------------------------------------
+# Concentrated nodal point loads. OPTIONAL.
+#
+# Each [[point_load]] entry applies a Cartesian force directly at the node(s)
+# of a 0D (point) physical group -- no integration, the force IS the nodal
+# load. Like the tractions above, it is scaled by load_factor each step.
+#
+#   physical_name -- gmsh physical-group name of dimension 0 (a point)
+#   force         -- length-ndofn force vector [Fx, Fy] in N
+#
+# Example: pull straight up on the crack tip with 100 N at full load.
+# (The 0D group "CrackTip" is defined in MeshGeneration.cpp.)
+# -----------------------------------------------------------------------------
+# [[point_load]]
+# physical_name = "CrackTip"
+# force         = [0.0, 100.0]
+
+# -----------------------------------------------------------------------------
+# Initial phase-field overrides. OPTIONAL.
+#
+# Each [[initial_phi]] entry sets phi = value on every mesh node of a physical
+# group at step 0. The physical group can be 0D, 1D or 2D -- the GMSH reader
+# tries dimensions in increasing order and uses the first match.
+#
+# This only sets the INITIAL state. The solver then evolves phi freely; nothing
+# is pinned. If you set phi = 1 on a strip with no surrounding history, the
+# phi-residual will try to relax it back unless the elastic energy in the
+# region builds H fast enough to hold it. For a permanently-locked pre-crack
+# you'd want either Dirichlet-pinning on phi or history-field seeding (not yet
+# implemented).
+#
+#   physical_name -- name of any gmsh physical group
+#   value         -- scalar phi to apply (typically 1.0 for "fully damaged")
+#
+# Example: pre-damage a physical group called "InitialCrack" to phi = 1.
+# -----------------------------------------------------------------------------
+# [[initial_phi]]
+# physical_name = "InitialCrack"
+# value         = 1.0
+
+# -----------------------------------------------------------------------------
+# Newton solver.
+#
+#   tol_rel, tol_abs -- a (sub-)solve converges when
+#                       ||R|| < max(tol_abs, tol_rel * ||R0||)
+#   max_iter         -- max Newton iterations per (sub-)solve
+#
+#   scheme           -- coupling strategy for the [u | phi] system:
+#                         "monolithic" (default) solves u and phi together;
+#                                      fast near the solution but the tangent
+#                                      can be indefinite during crack growth,
+#                                      where Newton may diverge.
+#                         "staggered"  alternate minimisation -- each step
+#                                      repeatedly solves the u sub-problem
+#                                      with phi frozen, then the phi sub-
+#                                      problem with u frozen, until the full
+#                                      coupled residual is small. More robust
+#                                      during crack propagation.
+#   max_staggered    -- (staggered only) max outer u/phi sweeps per step.
+# -----------------------------------------------------------------------------
+[solver]
+tol_rel       = 1.0e-4
+tol_abs       = 1.0e-7
+max_iter      = 200 
+verbose       = true
+scheme        = "staggered"   # "monolithic" or "staggered"
+max_staggered = 100         # used only when scheme = "staggered"
+
+
+
+# -----------------------------------------------------------------------------
+# Load-stepping driver.
+# -----------------------------------------------------------------------------
+[run]
+N_steps  = 20      # equal increments for load_factor : 0 -> 1
+show_gui = false    # open the Gmsh GUI after the run
