@@ -1,5 +1,7 @@
 #include "Output.h"
 
+#include "StiffnessPFM.h"     // for pfm::computeElementStresses
+
 #include <fstream>
 #include <stdexcept>
 #include <string>
@@ -90,6 +92,30 @@ void writeVTK(const std::string&     filename,
     f << "VECTORS displacement float\n";
     for (int n = 0; n < d.npoin; ++n)
         f << u(2 * n) << ' ' << u(2 * n + 1) << " 0\n";
+
+    // 6. Cell data: per-element effective stress and von Mises.
+    //    sigma_eff = g(phi) * sigma^+ + sigma^-, averaged over the element's
+    //    Gauss points. Written as CELL_DATA -- in ParaView each cell shows a
+    //    single (flat) value, which matches how the quantity is integrated.
+    const PerElementStresses se = computeElementStresses(d, u, phi);
+
+    f << "CELL_DATA " << d.nelem << '\n';
+
+    f << "SCALARS sigma_xx float 1\n";
+    f << "LOOKUP_TABLE default\n";
+    for (int e = 0; e < d.nelem; ++e) f << se.sigma_xx[e] << '\n';
+
+    f << "SCALARS sigma_yy float 1\n";
+    f << "LOOKUP_TABLE default\n";
+    for (int e = 0; e < d.nelem; ++e) f << se.sigma_yy[e] << '\n';
+
+    f << "SCALARS sigma_xy float 1\n";
+    f << "LOOKUP_TABLE default\n";
+    for (int e = 0; e < d.nelem; ++e) f << se.sigma_xy[e] << '\n';
+
+    f << "SCALARS von_mises float 1\n";
+    f << "LOOKUP_TABLE default\n";
+    for (int e = 0; e < d.nelem; ++e) f << se.von_mises[e] << '\n';
 }
 
 }  // namespace io

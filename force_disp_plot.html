@@ -1,0 +1,175 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Force–displacement viewer</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 24px; color: #1c1c1c; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.sub { color: #555; margin: 0 0 16px; }
+  .row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+  canvas { border: 1px solid #ddd; border-radius: 6px; background: #fff; }
+  .controls { margin: 12px 0 18px; }
+  table { border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+  th, td { border: 1px solid #e3e3e3; padding: 3px 8px; text-align: right; }
+  th { background: #f6f6f6; }
+  .hint { background: #f3f6ff; border: 1px solid #d4e0ff; padding: 10px 14px;
+          border-radius: 6px; max-width: 640px; margin-top: 16px; }
+  code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; }
+</style>
+
+<h1>Phase-field force–displacement viewer</h1>
+<p class="sub">Load <code>cracked_specimen_force_disp.csv</code> to check for snap-back.</p>
+
+<div class="controls">
+  <input type="file" id="file" accept=".csv,text/csv">
+</div>
+
+<div class="row">
+  <div>
+    <div><b>Reaction F<sub>y</sub> vs applied u<sub>y</sub></b></div>
+    <canvas id="cForce" width="560" height="420"></canvas>
+  </div>
+  <div>
+    <div><b>max φ vs applied u<sub>y</sub></b></div>
+    <canvas id="cPhi" width="560" height="420"></canvas>
+  </div>
+</div>
+
+<div class="hint" id="verdict">Waiting for a CSV…</div>
+
+<div id="tableWrap"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+function parseCSV(text) {
+  const lines = text.trim().split(/\r?\n/).filter(l => l.length);
+  const head = lines[0].split(',').map(s => s.trim());
+  const idx = name => head.indexOf(name);
+  const iU = idx('applied_uy'), iF = idx('reaction_Fy'),
+        iP = idx('max_phi'), iL = idx('load_factor'), iS = idx('step');
+  const rows = lines.slice(1).map(l => {
+    const c = l.split(',');
+    return {
+      step: +c[iS], load_factor: +c[iL],
+      uy: +c[iU], F: +c[iF], phi: +c[iP]
+    };
+  }).filter(r => Number.isFinite(r.uy));
+  return rows;
+}
+
+function plot(canvas, rows, xKey, yKey, color, opts = {}) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const m = { l: 64, r: 16, t: 16, b: 46 };
+  const xs = rows.map(r => r[xKey]), ys = rows.map(r => r[yKey]);
+  let xmin = Math.min(...xs), xmax = Math.max(...xs);
+  let ymin = Math.min(...ys, 0), ymax = Math.max(...ys, 0);
+  if (xmin === xmax) { xmax = xmin + 1; }
+  if (ymin === ymax) { ymax = ymin + 1; }
+  const padY = (ymax - ymin) * 0.08; ymin -= padY; ymax += padY;
+  const X = v => m.l + (v - xmin) / (xmax - xmin) * (W - m.l - m.r);
+  const Y = v => H - m.b - (v - ymin) / (ymax - ymin) * (H - m.t - m.b);
+
+  // axes + grid
+  ctx.strokeStyle = '#eee'; ctx.fillStyle = '#555';
+  ctx.font = '11px system-ui'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 5; i++) {
+    const gx = xmin + (xmax - xmin) * i / 5;
+    const gy = ymin + (ymax - ymin) * i / 5;
+    ctx.strokeStyle = '#f0f0f0';
+    ctx.beginPath(); ctx.moveTo(X(gx), m.t); ctx.lineTo(X(gx), H - m.b); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(m.l, Y(gy)); ctx.lineTo(W - m.r, Y(gy)); ctx.stroke();
+    ctx.fillText(gx.toExponential(2), X(gx) - 22, H - m.b + 16);
+    ctx.fillText(gy.toExponential(2), 4, Y(gy) + 3);
+  }
+  // zero line
+  if (ymin < 0 && ymax > 0) {
+    ctx.strokeStyle = '#bbb'; ctx.beginPath();
+    ctx.moveTo(m.l, Y(0)); ctx.lineTo(W - m.r, Y(0)); ctx.stroke();
+  }
+  ctx.strokeStyle = '#999';
+  ctx.beginPath(); ctx.moveTo(m.l, m.t); ctx.lineTo(m.l, H - m.b);
+  ctx.lineTo(W - m.r, H - m.b); ctx.stroke();
+  ctx.fillStyle = '#333';
+  ctx.fillText(opts.xlabel || xKey, (W) / 2 - 30, H - 8);
+  ctx.save(); ctx.translate(14, H / 2 + 30); ctx.rotate(-Math.PI / 2);
+  ctx.fillText(opts.ylabel || yKey, 0, 0); ctx.restore();
+
+  // line + points
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+  rows.forEach((r, i) => {
+    const px = X(r[xKey]), py = Y(r[yKey]);
+    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+  });
+  ctx.stroke();
+  ctx.fillStyle = color;
+  rows.forEach(r => {
+    ctx.beginPath(); ctx.arc(X(r[xKey]), Y(r[yKey]), 3, 0, 2 * Math.PI); ctx.fill();
+  });
+}
+
+function diagnose(rows) {
+  if (rows.length < 3) return 'Not enough points to judge yet.';
+  // Work in |F| so sign convention doesn't matter.
+  const F = rows.map(r => Math.abs(r.F));
+  let peakI = 0;
+  for (let i = 1; i < F.length; i++) if (F[i] > F[peakI]) peakI = i;
+  const lastPhi = rows[rows.length - 1].phi.toFixed(3);
+  const peak = rows[peakI];
+  // snap-back: applied displacement decreases after the peak on the recorded path
+  let dispTurnsBack = false;
+  for (let i = peakI + 1; i < rows.length; i++)
+    if (rows[i].uy < peak.uy - 1e-15) dispTurnsBack = true;
+  const droppedAfterPeak = peakI < F.length - 1 &&
+        F[F.length - 1] < 0.9 * F[peakI];
+
+  let msg = `Peak |F| = ${F[peakI].toExponential(3)} at u_y = `
+          + `${peak.uy.toExponential(3)} (step ${peak.step}, φ_max = `
+          + `${peak.phi.toFixed(3)}). Last recorded φ_max = ${lastPhi}.<br><br>`;
+  if (dispTurnsBack)
+    msg += '<b>Snap-back signature: YES.</b> Applied displacement decreases '
+         + 'after the force peak — the equilibrium path turns back, so '
+         + 'monotonic load/displacement stepping cannot traverse it. '
+         + 'This points to viscous regularization or arc-length / '
+         + 'dissipation control rather than smaller load steps.';
+  else if (droppedAfterPeak)
+    msg += '<b>Likely snap-through / unstable drop.</b> Force fell sharply '
+         + 'past the peak while displacement kept rising. If the solver '
+         + 'stalls here, viscous regularization is the cheapest robust fix.';
+  else
+    msg += '<b>No clear instability yet on the recorded path.</b> Force is '
+         + 'still monotonic in displacement up to where logging stopped — '
+         + 'if it stalls at φ≈0.6 anyway, the cause is more likely the '
+         + 'staggered contraction factor (solver-side) than true snap-back.';
+  return msg;
+}
+
+function table(rows) {
+  let h = '<table><tr><th>step</th><th>load_factor</th><th>applied_uy</th>'
+        + '<th>reaction_Fy</th><th>max_phi</th></tr>';
+  rows.forEach(r => {
+    h += `<tr><td>${r.step}</td><td>${r.load_factor}</td>`
+       + `<td>${r.uy.toExponential(3)}</td>`
+       + `<td>${r.F.toExponential(3)}</td>`
+       + `<td>${r.phi.toFixed(4)}</td></tr>`;
+  });
+  return h + '</table>';
+}
+
+$('file').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    const rows = parseCSV(rd.result);
+    if (!rows.length) { $('verdict').textContent = 'No data rows parsed.'; return; }
+    plot($('cForce'), rows, 'uy', 'F', '#c0392b',
+         { xlabel: 'applied u_y (mm)', ylabel: 'reaction F_y (N)' });
+    plot($('cPhi'), rows, 'uy', 'phi', '#2c6fbb',
+         { xlabel: 'applied u_y (mm)', ylabel: 'max φ' });
+    $('verdict').innerHTML = diagnose(rows);
+    $('tableWrap').innerHTML = table(rows);
+  };
+  rd.readAsText(f);
+});
+</script>

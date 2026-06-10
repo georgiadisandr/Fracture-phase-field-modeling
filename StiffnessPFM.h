@@ -166,4 +166,26 @@ assemblePhi_System(const FemInput&        d,
                    const Eigen::VectorXd& phi_global,
                    const HistoryField&    history);
 
+// ===========================================================================
+// Per-element stress field for post-processing (VTK output).
+//
+// Effective Cauchy stress at each element, averaged across the element's
+// Gauss points:
+//     sigma_eff = g(phi) * sigma^+ + sigma^-
+// plus the von Mises scalar derived from that effective stress. Stress is
+// piecewise constant per element in this output (no nodal projection); the
+// driver writes it as CELL_DATA in the VTK file.
+// ===========================================================================
+struct PerElementStresses {
+    std::vector<double> sigma_xx;
+    std::vector<double> sigma_yy;
+    std::vector<double> sigma_xy;
+    std::vector<double> von_mises;
+};
+
+PerElementStresses
+computeElementStresses(const FemInput&        d,
+                       const Eigen::VectorXd& u,
+                       const Eigen::VectorXd& phi);
+
 }  // namespace pfm

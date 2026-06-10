@@ -98,7 +98,7 @@ void configure_size_field(const Config& cfg, const Geometry& g)
     const int fThTip = mf::add("Threshold");
 
     mf::setNumber(fThTip, "InField", fDistTip);
-    mf::setNumber(fThTip, "SizeMin", cfg.h_fine);
+    mf::setNumber(fThTip, "SizeMin", cfg.h_far);
     mf::setNumber(fThTip, "SizeMax", cfg.h_far);
 
     mf::setNumber(fThTip, "DistMin", cfg.r_fine* 3.0);

@@ -538,4 +538,99 @@ assemblePhi_System(const FemInput&        d,
     return sys;
 }
 
+
+// ===========================================================================
+// Per-element effective stress for post-processing.
+//
+// At each element, evaluates sigma_eff = g(phi) * sigma^+ + sigma^- at every
+// Gauss point and averages the result. The same evaluation also produces the
+// von Mises scalar (plane-stress formula -- the standard 2D quick-look; for
+// plane strain it underestimates the out-of-plane sigma_z contribution but
+// the qualitative picture is unchanged).
+//
+// The output is one value per element; the driver writes it as CELL_DATA in
+// the VTK file. This isn't a hot path -- called once per accepted load step
+// from writeVTK -- so we don't bother with the MatCache / B-matrix reuse
+// tricks of the assembly loop.
+// ===========================================================================
+PerElementStresses
+computeElementStresses(const FemInput&        d,
+                       const Eigen::VectorXd& u,
+                       const Eigen::VectorXd& phi)
+{
+    if (u.size()   != 2 * d.npoin)
+        throw std::runtime_error(
+            "computeElementStresses: u size != 2*npoin");
+    if (phi.size() != d.npoin)
+        throw std::runtime_error(
+            "computeElementStresses: phi size != npoin");
+
+    PerElementStresses out;
+    out.sigma_xx .assign(d.nelem, 0.0);
+    out.sigma_yy .assign(d.nelem, 0.0);
+    out.sigma_xy .assign(d.nelem, 0.0);
+    out.von_mises.assign(d.nelem, 0.0);
+
+    std::vector<int> nodes;
+    Eigen::VectorXd  u_elem, phi_elem;
+
+    for (int e = 0; e < d.nelem; ++e) {
+        nodes.assign(d.conn.begin() + d.offset[e],
+                     d.conn.begin() + d.offset[e + 1]);
+        const int nnode = static_cast<int>(nodes.size());
+        const int ndime = d.ndime;
+
+        const MatParams mp = MatParams::from(d.props[d.matno[e]]);
+        const MatCache& mc = d.mat_caches[d.matno[e]];
+
+        std::vector<std::vector<double>> elcod(ndime,
+                                               std::vector<double>(nnode, 0.0));
+        u_elem  .resize(2 * nnode);
+        phi_elem.resize(nnode);
+
+        for (int i = 0; i < nnode; ++i) {
+            const int node = nodes[i];
+            for (int dim = 0; dim < ndime; ++dim)
+                elcod[dim][i] = d.coord(node, dim);
+            u_elem(2 * i)     = u(2 * node);
+            u_elem(2 * i + 1) = u(2 * node + 1);
+            phi_elem(i)       = phi(node);
+        }
+
+        const auto gps = fem::gaussPoints(nnode, d.ngaus);
+        const int  ngp = static_cast<int>(gps.size());
+
+        Eigen::Vector3d sigma_avg = Eigen::Vector3d::Zero();
+        for (int g = 0; g < ngp; ++g) {
+            const fem::ShapeData sh = fem::shapeFunc(gps[g].xi, gps[g].eta, nnode);
+            const fem::Jacobian  J  = fem::jacob2(elcod, sh, nnode, ndime);
+
+            Eigen::VectorXd N(nnode);
+            for (int i = 0; i < nnode; ++i) N(i) = sh.Shape[i];
+
+            const Eigen::MatrixXd Bu = fem::buildBu(J.cartd, nnode);
+
+            const double          phi_g = N.dot(phi_elem);
+            const double          g_phi = degradation(phi_g, mp.k);
+            const Eigen::Vector3d eps   = Bu * u_elem;
+            const EnergySplit     sp    = energySplit(eps, mc, d.split);
+
+            sigma_avg += g_phi * sp.sigma_plus + sp.sigma_minus;
+        }
+        sigma_avg /= static_cast<double>(ngp);
+
+        const double sxx = sigma_avg(0);
+        const double syy = sigma_avg(1);
+        const double sxy = sigma_avg(2);
+        const double svM = std::sqrt(sxx * sxx + syy * syy
+                                      - sxx * syy + 3.0 * sxy * sxy);
+
+        out.sigma_xx [e] = sxx;
+        out.sigma_yy [e] = syy;
+        out.sigma_xy [e] = sxy;
+        out.von_mises[e] = svM;
+    }
+    return out;
+}
+
 }  // namespace pfm

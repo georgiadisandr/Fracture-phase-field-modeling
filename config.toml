@@ -12,26 +12,26 @@
 # Mesh / specimen geometry
 # -----------------------------------------------------------------------------
 [mesh]
-W         = 100.0
-H         = 40.0
-a         = 50.0
+W         = 0.5
+H         = 0.5
+a         = 0.25
 # y_crack defaults to H/2 when omitted.
 
 # h_fine - h_far mesh size near and far the selected physical group 
-h_fine    = 0.05
-h_far     = 1
+h_fine    = 1.0e-3
+h_far     = 5.0e-2
 
 # distance of mesh refinment 
-r_fine    = 1.0
-r_far     = 10.0
+r_fine    = 0.02
+r_far     = 0.2
 
-base_name = "cracked_specimen"
+base_name = "cracked_specimen_newmat"
 
 # -----------------------------------------------------------------------------
 # FEM problem-level constants
 # -----------------------------------------------------------------------------
 [fem]
-ntype = 1     # 1 = plane stress, 2 = plane strain
+ntype = 2     # 1 = plane stress, 2 = plane strain
 ndofn = 2     # deggres of freedom dispacement field only
 ngaus = 2     # Gauss point per direction   
 nstre = 3
@@ -63,7 +63,7 @@ energy_split = "amor"
 # -----------------------------------------------------------------------------
 [[materials]]
 name  = "test"
-props = [ 32000.0, 0.2, 0.003, 0.25, 1.0e-6 ]
+props = [ 210000.0, 0.3, 2.7, 4.0e-3, 1.0e-6 ]
 
 [[material_for_group]]
 group    = "Domain"
@@ -80,7 +80,7 @@ values        = [0.0, 0.0]
 [[bcs]]
 physical_name = "Top"
 flags         = [1, 1]
-values        = [0.0, 0.035]    # applied uy in mm at full load
+values        = [0.0, 0.0060]    # applied uy in mm at full load
 
 # -----------------------------------------------------------------------------
 # Neumann boundary conditions (surface tractions). OPTIONAL.
@@ -159,13 +159,45 @@ tol_abs       = 1.0e-7
 max_iter      = 200 
 verbose       = true
 scheme        = "staggered"   # "monolithic" or "staggered"
-max_staggered = 100         # used only when scheme = "staggered"
+max_staggered = 1000         # used only when scheme = "staggered"
 
 
 
 # -----------------------------------------------------------------------------
 # Load-stepping driver.
+#
+# step_mode selects how the applied load is advanced:
+#
+#   "uniform"    N_steps equal load_factor increments 0 -> 1 (original mode).
+#
+#   "two_stage"  Displacement-controlled two-rate schedule (Ambati et al.):
+#                the applied displacement u is advanced by du_coarse until it
+#                reaches u_switch, then by du_fine to the end. Keyed on the
+#                magnitude of the largest prescribed Dirichlet uy (the "Top" BC
+#                = 0.006 mm here) and converted to a load_factor increment
+#                internally. N_steps is IGNORED in this mode.
+#
+# The adaptive halving safety net applies in both modes: a non-converged step
+# is rolled back and the increment halved (to nominal / 2^6) before giving up.
+#
+# These are Ambati's steel-SENT values. u_switch (5e-3) sits just below the
+# expected load-displacement knee (~5.5e-3) so the fine increments resolve the
+# crack-growth region; it MUST be smaller than the Top uy (0.006).
 # -----------------------------------------------------------------------------
 [run]
-N_steps  = 20      # equal increments for load_factor : 0 -> 1
-show_gui = false    # open the Gmsh GUI after the run
+N_steps  = 1       # used only when step_mode = "uniform"
+show_gui = true    # open the Gmsh GUI after the run
+
+step_mode = "two_stage"  # "uniform" or "two_stage"
+du_coarse = 1.0e-5       # coarse displacement increment (mm), pre-knee
+u_switch  = 5.0e-3       # switch to fine increments at this applied u (mm)
+du_fine   = 1.0e-6       # fine displacement increment (mm), through crack growth
+
+# Output controls.
+#   vtk_every -- write a VTK snapshot every Nth ACCEPTED step (1 = every step).
+#                Step 0 and the final converged step are always written, and
+#                the force-displacement CSV is still logged every step.
+#   write_log -- mirror all terminal output to "<base_name>_run.txt".
+vtk_every = 20
+write_log = true
+

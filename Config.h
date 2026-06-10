@@ -25,6 +25,24 @@
 
 namespace appcfg {
 
+// Load-stepping mode.
+//   Uniform  : N_steps equal load_factor increments 0 -> 1 (original behaviour).
+//   TwoStage : displacement-controlled two-rate schedule (Ambati-style). The
+//              applied displacement is advanced by du_coarse until it reaches
+//              u_switch, then by du_fine to the end. The schedule is keyed on
+//              the magnitude of the largest prescribed Dirichlet uy (the loaded
+//              edge), converted to a load_factor increment internally. N_steps
+//              is ignored in this mode. The adaptive halving safety net still
+//              applies on non-convergence.
+enum class StepMode { Uniform, TwoStage };
+
+struct StepControl {
+    StepMode mode      = StepMode::Uniform;
+    double   du_coarse = 1.0e-5;   // coarse displacement increment (mm)
+    double   u_switch  = 5.0e-3;   // switch displacement (mm)
+    double   du_fine   = 1.0e-6;   // fine displacement increment (mm)
+};
+
 struct AppConfig {
     // Mesh + geometry knobs (W, H, a, y_crack, h_fine, h_far, r_fine, r_far,
     // base_name). Defaults come from mesh::Config.
@@ -38,7 +56,19 @@ struct AppConfig {
     pfm::SolverSettings solver;
 
     // Number of equal load increments for load_factor: 0 -> 1.
+    // Used only when step.mode == StepMode::Uniform.
     int N_steps = 15;
+
+    // Load-stepping schedule (uniform vs. two-stage displacement control).
+    StepControl step;
+
+    // Write a VTK snapshot every `vtk_every` ACCEPTED steps (1 = every step).
+    // Step 0 (initial state) and the final converged step are always written.
+    int vtk_every = 1;
+
+    // Mirror all terminal output (std::cout / std::cerr) to a per-run text
+    // file named "<base_name>_run.txt".
+    bool write_log = true;
 
     // Launch the Gmsh GUI after the run.
     bool show_gui = true;

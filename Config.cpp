@@ -308,6 +308,31 @@ void loadRunSection(const toml::table& root, AppConfig& cfg)
     if (readScalar<int64_t>(*tbl, "N_steps", ns))
         cfg.N_steps = static_cast<int>(ns);
     readScalar(*tbl, "show_gui", cfg.show_gui);
+
+    // Load-stepping mode: "uniform" (default) or "two_stage". Case-insensitive.
+    std::string sm;
+    if (readString(*tbl, "step_mode", sm)) {
+        for (auto& c : sm) c = static_cast<char>(std::tolower(c));
+        if (sm == "uniform")
+            cfg.step.mode = StepMode::Uniform;
+        else if (sm == "two_stage" || sm == "twostage" || sm == "two-stage")
+            cfg.step.mode = StepMode::TwoStage;
+        else
+            throw std::runtime_error(
+                "run.step_mode must be \"uniform\" or \"two_stage\" "
+                "(got \"" + sm + "\")");
+    }
+
+    // Two-stage displacement schedule (used only when step_mode = two_stage).
+    readDouble(*tbl, "du_coarse", cfg.step.du_coarse);
+    readDouble(*tbl, "u_switch",  cfg.step.u_switch);
+    readDouble(*tbl, "du_fine",   cfg.step.du_fine);
+
+    // Output controls.
+    int64_t ve = 0;
+    if (readScalar<int64_t>(*tbl, "vtk_every", ve))
+        cfg.vtk_every = static_cast<int>(ve);
+    readScalar(*tbl, "write_log", cfg.write_log);
 }
 
 }  // namespace
@@ -396,6 +421,20 @@ void validate(const AppConfig& cfg)
 
     if (cfg.N_steps <= 0)
         throw std::invalid_argument("run.N_steps must be > 0");
+    if (cfg.vtk_every < 1)
+        throw std::invalid_argument("run.vtk_every must be >= 1");
+    if (cfg.step.mode == StepMode::TwoStage) {
+        if (cfg.step.du_coarse <= 0.0 || cfg.step.du_fine <= 0.0)
+            throw std::invalid_argument(
+                "run.du_coarse and run.du_fine must be > 0 in two_stage mode");
+        if (cfg.step.u_switch <= 0.0)
+            throw std::invalid_argument(
+                "run.u_switch must be > 0 in two_stage mode");
+        if (cfg.step.du_fine > cfg.step.du_coarse)
+            throw std::invalid_argument(
+                "run.du_fine should be <= run.du_coarse (fine stage is the "
+                "refined one)");
+    }
     if (cfg.solver.max_iter <= 0)
         throw std::invalid_argument("solver.max_iter must be > 0");
     if (cfg.solver.tol_rel <= 0.0 || cfg.solver.tol_abs <= 0.0)

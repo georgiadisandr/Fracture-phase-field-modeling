@@ -12,6 +12,13 @@
 //   * POINT_DATA:
 //       SCALARS phi          : nodal phase-field value
 //       VECTORS displacement : nodal displacement (ux, uy, 0)
+//   * CELL_DATA (one value per element):
+//       SCALARS sigma_xx     : effective Cauchy stress, xx component
+//       SCALARS sigma_yy     : effective Cauchy stress, yy component
+//       SCALARS sigma_xy     : effective Cauchy shear stress
+//       SCALARS von_mises    : von Mises scalar from the effective stress
+//     Stresses are sigma_eff = g(phi) sigma^+ + sigma^- averaged over the
+//     element's Gauss points (plane-stress von Mises formula).
 //
 // For load stepping, call writeVTK repeatedly with filenames like
 // "step_000.vtk", "step_001.vtk", ... ParaView treats a numbered sequence
