@@ -12,18 +12,18 @@
 # Mesh / specimen geometry
 # -----------------------------------------------------------------------------
 [mesh]
-W         = 0.5
-H         = 0.5
-a         = 0.25
+W         = 1.0
+H         = 1.0
+a         = 0.5
 # y_crack defaults to H/2 when omitted.
 
 # h_fine - h_far mesh size near and far the selected physical group 
-h_fine    = 1.0e-3
+h_fine    = 1.2e-3
 h_far     = 5.0e-2
 
 # distance of mesh refinment 
 r_fine    = 0.02
-r_far     = 0.2
+r_far     = 0.15
 
 base_name = "cracked_specimen_newmat"
 
@@ -31,7 +31,7 @@ base_name = "cracked_specimen_newmat"
 # FEM problem-level constants
 # -----------------------------------------------------------------------------
 [fem]
-ntype = 2     # 1 = plane stress, 2 = plane strain
+ntype = 1     # 1 = plane stress, 2 = plane strain
 ndofn = 2     # deggres of freedom dispacement field only
 ngaus = 2     # Gauss point per direction   
 nstre = 3
@@ -63,7 +63,7 @@ energy_split = "amor"
 # -----------------------------------------------------------------------------
 [[materials]]
 name  = "test"
-props = [ 210000.0, 0.3, 2.7, 4.0e-3, 1.0e-6 ]
+props = [ 210000.0, 0.3, 2.7, 4.0e-3, 1.0e-8 ]
 
 [[material_for_group]]
 group    = "Domain"
@@ -156,10 +156,20 @@ values        = [0.0, 0.0060]    # applied uy in mm at full load
 [solver]
 tol_rel       = 1.0e-4
 tol_abs       = 1.0e-7
-max_iter      = 200 
+max_iter      = 200
 verbose       = true
 scheme        = "staggered"   # "monolithic" or "staggered"
 max_staggered = 1000         # used only when scheme = "staggered"
+
+# Outer staggered-cycle stopping criterion (staggered only):
+#   "residual" -- stop when the coupled ||R|| < max(tol_abs, tol_rel*||R0||).
+#                 Drives the staggered fixed point to the monolithic solution.
+#   "energy"   -- Ambati et al. (2015), Sect. 3.4: stop when the normalized
+#                 energy-slope angle gamma <= stagger_gamma_tol_deg. tol_rel /
+#                 tol_abs still govern the inner u/phi Newton sub-solves.
+# The inner sub-solves are unaffected; this only ends the outer u/phi sweeps.
+stagger_stop          = "energy"
+stagger_gamma_tol_deg = 10.0    # Ambati's suggested ~10 deg (energy criterion only)
 
 
 

@@ -161,6 +161,12 @@ int main(int argc, char** argv) try
     appcfg::applyCliOverrides(cfg, argc, argv);
     appcfg::validate(cfg);
 
+    // Per-sweep staggered energy history E^k (Ambati Sect. 3.4). Written only
+    // for the staggered scheme; harmless to set otherwise (monolithic ignores
+    // it). Filter the CSV by load_factor to recover one step's {E^k} sequence.
+    if (cfg.solver.scheme == pfm::SolverScheme::Staggered)
+        cfg.solver.energy_csv = cfg.mesh.base_name + "_stagger_energy.csv";
+
     // Mirror all terminal output to "<base_name>_run.txt" (config: write_log).
     // Installed before the first print so the whole run is captured. Restored
     // automatically at scope exit. NOTE: Gmsh's own library messages print at

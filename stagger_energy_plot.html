@@ -1,0 +1,258 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Staggered energy convergence viewer</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 24px; color: #1c1c1c; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.sub { color: #555; margin: 0 0 16px; }
+  .controls { margin: 12px 0 18px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+  .row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+  canvas { border: 1px solid #ddd; border-radius: 6px; background: #fff; }
+  label { font-size: 13px; color: #333; }
+  select { font: 13px system-ui; padding: 2px 6px; }
+  .hint { background: #f3f6ff; border: 1px solid #d4e0ff; padding: 10px 14px;
+          border-radius: 6px; max-width: 760px; margin-top: 16px; }
+  code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; }
+  .cap { font-weight: 600; margin-bottom: 2px; }
+  .note { font-size: 12px; color: #666; margin-top: 2px; max-width: 560px; }
+</style>
+
+<h1>Staggered energy convergence viewer</h1>
+<p class="sub">Load <code>&lt;base_name&gt;_stagger_energy.csv</code> to inspect the staggered cycle the way Ambati et&nbsp;al. (Sect.&nbsp;3.4, Figs.&nbsp;4&amp;6) do.</p>
+
+<div class="controls">
+  <input type="file" id="file" accept=".csv,text/csv">
+  <label>Load step (load_factor):
+    <select id="stepSel" disabled></select>
+  </label>
+  <label><input type="checkbox" id="splitChk"> show elastic / fracture split</label>
+</div>
+
+<div class="row">
+  <div>
+    <div class="cap">E<sup>k</sup> vs sweep k &nbsp;<span style="font-weight:400;color:#888">(Fig. 4)</span></div>
+    <canvas id="cEnergy" width="520" height="380"></canvas>
+    <div class="note">Total internal energy per outer sweep. Should decrease monotonically and flatten.</div>
+  </div>
+  <div>
+    <div class="cap">Normalized E<sup>Norm</sup><sub>k</sub> vs s<sub>k</sub> &nbsp;<span style="font-weight:400;color:#888">(Fig. 6, left)</span></div>
+    <canvas id="cNorm" width="520" height="380"></canvas>
+    <div class="note">Both axes rescaled to [0,1]; this is what makes a single Tol meaningful.</div>
+  </div>
+  <div>
+    <div class="cap">γ(E<sub>k</sub>) vs k &nbsp;<span style="font-weight:400;color:#888">(Fig. 6, right)</span></div>
+    <canvas id="cGamma" width="520" height="380"></canvas>
+    <div class="note">Normalized slope angle (deg). Paper stops the cycle when γ ≤ Tol ≈ 10° (dashed line).</div>
+  </div>
+</div>
+
+<div class="hint" id="verdict">Waiting for a CSV…</div>
+
+<script>
+const COLS = ["load_factor","sweep","E_total","E_elastic","E_fracture","R_norm"];
+let byStep = new Map();   // load_factor (string) -> array of rows sorted by sweep
+
+const $ = id => document.getElementById(id);
+
+function parseCSV(text){
+  const lines = text.trim().split(/\r?\n/);
+  const header = lines[0].split(",").map(s=>s.trim());
+  const idx = {};
+  COLS.forEach(c => idx[c] = header.indexOf(c));
+  const rows = [];
+  for(let i=1;i<lines.length;i++){
+    if(!lines[i].trim()) continue;
+    const p = lines[i].split(",");
+    rows.push({
+      load_factor: p[idx.load_factor].trim(),
+      sweep:   +p[idx.sweep],
+      E_total: +p[idx.E_total],
+      E_elastic: idx.E_elastic>=0 ? +p[idx.E_elastic] : NaN,
+      E_fracture: idx.E_fracture>=0 ? +p[idx.E_fracture] : NaN,
+      R_norm:  idx.R_norm>=0 ? +p[idx.R_norm] : NaN,
+    });
+  }
+  return rows;
+}
+
+function groupByStep(rows){
+  const m = new Map();
+  for(const r of rows){
+    if(!m.has(r.load_factor)) m.set(r.load_factor, []);
+    m.get(r.load_factor).push(r);
+  }
+  for(const arr of m.values()) arr.sort((a,b)=>a.sweep-b.sweep);
+  return m;
+}
+
+// ---- generic line plot on a canvas -----------------------------------------
+function plot(canvas, series, opts){
+  opts = opts || {};
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  const mL=58, mR=14, mT=14, mB=42;
+  ctx.clearRect(0,0,W,H);
+
+  let xs=[], ys=[];
+  series.forEach(s => s.pts.forEach(p=>{ xs.push(p.x); ys.push(p.y); }));
+  if(opts.refY!=null) ys.push(opts.refY);
+  if(xs.length===0){ ctx.fillStyle="#999"; ctx.fillText("no data",mL,H/2); return; }
+
+  let xmin=Math.min(...xs), xmax=Math.max(...xs);
+  let ymin=opts.ymin!=null?opts.ymin:Math.min(...ys);
+  let ymax=opts.ymax!=null?opts.ymax:Math.max(...ys);
+  if(xmin===xmax){xmin-=0.5;xmax+=0.5;}
+  if(ymin===ymax){ymin-=Math.abs(ymin)*0.05+1e-6;ymax+=Math.abs(ymax)*0.05+1e-6;}
+  const padY=(ymax-ymin)*0.08; ymin-=padY; ymax+=padY;
+
+  const X = x => mL + (x-xmin)/(xmax-xmin)*(W-mL-mR);
+  const Y = y => H-mB - (y-ymin)/(ymax-ymin)*(H-mT-mB);
+
+  // axes + grid
+  ctx.strokeStyle="#e6e6e6"; ctx.fillStyle="#666"; ctx.lineWidth=1;
+  ctx.font="11px system-ui"; ctx.textAlign="right"; ctx.textBaseline="middle";
+  for(let i=0;i<=5;i++){
+    const yv=ymin+(ymax-ymin)*i/5, py=Y(yv);
+    ctx.beginPath(); ctx.moveTo(mL,py); ctx.lineTo(W-mR,py); ctx.stroke();
+    ctx.fillText(fmt(yv), mL-6, py);
+  }
+  ctx.textAlign="center"; ctx.textBaseline="top";
+  for(let i=0;i<=5;i++){
+    const xv=xmin+(xmax-xmin)*i/5, px=X(xv);
+    ctx.fillText(fmt(xv), px, H-mB+6);
+  }
+  ctx.strokeStyle="#444"; ctx.beginPath();
+  ctx.moveTo(mL,mT); ctx.lineTo(mL,H-mB); ctx.lineTo(W-mR,H-mB); ctx.stroke();
+
+  // axis titles
+  ctx.fillStyle="#333"; ctx.font="12px system-ui";
+  ctx.textAlign="center"; ctx.textBaseline="bottom";
+  ctx.fillText(opts.xlabel||"", (mL+W-mR)/2, H-6);
+  ctx.save(); ctx.translate(14,(mT+H-mB)/2); ctx.rotate(-Math.PI/2);
+  ctx.textBaseline="top"; ctx.fillText(opts.ylabel||"",0,0); ctx.restore();
+
+  // reference line (e.g. Tol = 10 deg)
+  if(opts.refY!=null){
+    ctx.strokeStyle="#d23"; ctx.setLineDash([5,4]); ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(mL,Y(opts.refY)); ctx.lineTo(W-mR,Y(opts.refY)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle="#d23"; ctx.font="11px system-ui"; ctx.textAlign="left"; ctx.textBaseline="bottom";
+    ctx.fillText(opts.refLabel||"", mL+6, Y(opts.refY)-2);
+  }
+
+  // series
+  series.forEach(s=>{
+    ctx.strokeStyle=s.color; ctx.fillStyle=s.color; ctx.lineWidth=1.8;
+    ctx.beginPath();
+    s.pts.forEach((p,i)=>{ const px=X(p.x),py=Y(p.y); i?ctx.lineTo(px,py):ctx.moveTo(px,py); });
+    ctx.stroke();
+    if(s.pts.length<=80) s.pts.forEach(p=>{ ctx.beginPath(); ctx.arc(X(p.x),Y(p.y),2.4,0,2*Math.PI); ctx.fill(); });
+  });
+
+  // legend
+  if(series.length>1){
+    let lx=W-mR-8, ly=mT+6; ctx.textAlign="right"; ctx.textBaseline="top"; ctx.font="11px system-ui";
+    series.forEach(s=>{ ctx.fillStyle=s.color; ctx.fillText(s.name, lx, ly); ly+=14; });
+  }
+}
+function fmt(v){
+  if(v===0) return "0";
+  const a=Math.abs(v);
+  if(a>=1000||a<0.01) return v.toExponential(1);
+  return (Math.round(v*1000)/1000).toString();
+}
+
+// ---- derived quantities per step -------------------------------------------
+function metrics(rows){
+  const k = rows.map(r=>r.sweep);
+  const E = rows.map(r=>r.E_total);
+  const N = rows.length;
+  const E1=E[0], EN=E[N-1];
+  const denom=(E1-EN)||1e-30;
+  const sk = rows.map((_,i)=>(i+1)/N);                 // s_k = k/N
+  const Enorm = E.map(e=>(e-EN)/denom);                // E_k^Norm
+  const gamma=[], alpha=[], beta=[];
+  for(let i=0;i<N-1;i++){
+    const dE=E[i]-E[i+1];
+    alpha.push({x:k[i], y: dE/(E[i+1]||1e-30)*100});
+    beta.push ({x:k[i], y: Math.atan(dE)*180/Math.PI});
+    const dN=(Enorm[i]-Enorm[i+1])/((sk[i+1]-sk[i])||1e-30);
+    gamma.push({x:k[i], y: Math.atan(dN)*180/Math.PI});  // offline, fixed final N (Fig. 6)
+  }
+  // Running-N gamma: exactly what the solver tests at each sweep, renormalizing
+  // with N = current iteration (paper's "f(E_k)|_{k=N}"). This is the operative
+  // stopping quantity; the offline gamma above just reproduces the Fig. 6 shape.
+  const gammaRun=[];
+  for(let j=2;j<=N;j++){
+    const num=E[j-2]-E[j-1];                 // E^{j-1} - E^j
+    const den=E[0]-E[j-1];                   // E^1 - E^j
+    const floor=Math.max(1e-30,1e-12*Math.abs(E[0]));
+    const y=(Math.abs(den)<=floor) ? 0 : Math.atan(j*num/den)*180/Math.PI;
+    gammaRun.push({x:j, y});
+  }
+  return {k,E,N,sk,Enorm,gamma,gammaRun,alpha,beta,
+          eEl:rows.map(r=>r.E_elastic), eFr:rows.map(r=>r.E_fracture)};
+}
+
+function render(){
+  const key = $("stepSel").value;
+  const rows = byStep.get(key);
+  if(!rows) return;
+  const m = metrics(rows);
+  const split = $("splitChk").checked;
+
+  const eSeries=[{name:"E_total", color:"#1764d6", pts: m.k.map((x,i)=>({x, y:m.E[i]}))}];
+  if(split){
+    eSeries.push({name:"elastic",  color:"#e8820c", pts: m.k.map((x,i)=>({x, y:m.eEl[i]}))});
+    eSeries.push({name:"fracture", color:"#159150", pts: m.k.map((x,i)=>({x, y:m.eFr[i]}))});
+  }
+  plot($("cEnergy"), eSeries, {xlabel:"sweep k", ylabel:"E"});
+  plot($("cNorm"),
+      [{name:"", color:"#7a3fb5", pts: m.k.map((x,i)=>({x:m.sk[i], y:m.Enorm[i]}))}],
+      {xlabel:"s_k = k/N", ylabel:"E_k^Norm", ymin:0, ymax:1});
+  plot($("cGamma"),
+      [{name:"running (solver)", color:"#e8820c", pts: m.gammaRun},
+       {name:"final-N (Fig. 6)", color:"#159150", pts: m.gamma}],
+      {xlabel:"sweep k", ylabel:"γ (deg)", refY:10, refLabel:"Tol = 10°", ymin:0});
+
+  // verdict: first k where the RUNNING gamma (what the solver tests) <= 10 deg
+  let kstop=null;
+  for(const g of m.gammaRun){ if(g.y<=10){ kstop=g.x; break; } }
+  const last = rows[rows.length-1];
+  $("verdict").innerHTML =
+    `<b>Step load_factor = ${key}</b> — ${m.N} staggered sweep(s). ` +
+    `E went ${fmt(m.E[0])} → ${fmt(m.E[m.N-1])}, final ‖R‖ = ${fmt(last.R_norm)}. ` +
+    (kstop!=null
+       ? `The γ ≤ 10° criterion would stop at <b>k = ${kstop}</b> (of ${m.N}).`
+       : `γ never drops to 10° within the logged sweeps — energy still settling.`) +
+    `<br><span style="font-size:12px;color:#666">Note: your solver actually stops this cycle on the residual ` +
+    `‖R‖ &lt; max(tol_abs, tol_rel·‖R0‖); the γ value here is diagnostic only.</span>`;
+}
+
+$("file").addEventListener("change", e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const rd=new FileReader();
+  rd.onload=()=>{
+    const rows=parseCSV(rd.result);
+    byStep=groupByStep(rows);
+    const sel=$("stepSel"); sel.innerHTML="";
+    // list steps that actually have >1 sweep first (more interesting), keep order
+    const keys=[...byStep.keys()];
+    keys.forEach(k=>{
+      const n=byStep.get(k).length;
+      const o=document.createElement("option");
+      o.value=k; o.textContent=`${k}  (${n} sweep${n>1?"s":""})`;
+      sel.appendChild(o);
+    });
+    sel.disabled=false;
+    // default to the step with the most sweeps (most to look at)
+    let best=keys[0],bestN=0;
+    keys.forEach(k=>{ const n=byStep.get(k).length; if(n>bestN){bestN=n;best=k;} });
+    sel.value=best;
+    render();
+  };
+  rd.readAsText(f);
+});
+$("stepSel").addEventListener("change", render);
+$("splitChk").addEventListener("change", render);
+</script>

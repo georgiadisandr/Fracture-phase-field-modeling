@@ -188,4 +188,31 @@ computeElementStresses(const FemInput&        d,
                        const Eigen::VectorXd& u,
                        const Eigen::VectorXd& phi);
 
+// ===========================================================================
+// Total internal energy functional E(u, phi)  (Ambati et al. 2015, Eq. 11;
+// Miehe/AT2 normalization, matching the assembled residual in this file):
+//
+//   E_elastic  = INT_V [ g(phi) psi^+ + psi^- ] dV
+//   E_fracture = INT_V  Gc ( phi^2/(2 l0) + (l0/2)|grad phi|^2 ) dV
+//   E_total    = E_elastic + E_fracture
+//
+// This is the scalar whose stationarity gives R^u / R^phi, and the natural
+// quantity to monitor staggered-cycle convergence: {E^k} decreases
+// monotonically toward the minimizer (see Ambati Sect. 3.4). The ACTUAL
+// elastic psi^+(eps) is used here, NOT the history H -- E is the genuine
+// stored energy, while H is only the irreversibility device in the residual.
+// There is no external-work term (displacement control enters via the
+// Dirichlet BC on u, as in the paper's E(u,d)).
+// ===========================================================================
+struct EnergyParts {
+    double elastic  = 0.0;   // INT g(phi) psi^+ + psi^- dV
+    double fracture = 0.0;   // INT Gc ( phi^2/(2 l0) + (l0/2)|grad phi|^2 ) dV
+    double total() const { return elastic + fracture; }
+};
+
+EnergyParts
+computeEnergy(const FemInput&        d,
+              const Eigen::VectorXd& u,
+              const Eigen::VectorXd& phi);
+
 }  // namespace pfm

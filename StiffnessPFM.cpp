@@ -633,4 +633,82 @@ computeElementStresses(const FemInput&        d,
     return out;
 }
 
+// ===========================================================================
+// Total internal energy E(u, phi). Integrates the elastic + fracture density
+// over the mesh by Gauss quadrature -- same per-Gauss-point pipeline as the
+// assembly, but accumulating energy scalars instead of residual/tangent.
+// Not a hot path (called for diagnostics, e.g. once per staggered sweep), so
+// the MatCache / B-matrix reuse tricks of the assembly loop aren't needed.
+// ===========================================================================
+EnergyParts
+computeEnergy(const FemInput&        d,
+              const Eigen::VectorXd& u,
+              const Eigen::VectorXd& phi)
+{
+    if (u.size()   != 2 * d.npoin)
+        throw std::runtime_error("computeEnergy: u size != 2*npoin");
+    if (phi.size() != d.npoin)
+        throw std::runtime_error("computeEnergy: phi size != npoin");
+
+    EnergyParts E;
+
+    std::vector<int> nodes;
+    Eigen::VectorXd  u_elem, phi_elem;
+
+    for (int e = 0; e < d.nelem; ++e) {
+        nodes.assign(d.conn.begin() + d.offset[e],
+                     d.conn.begin() + d.offset[e + 1]);
+        const int nnode = static_cast<int>(nodes.size());
+        const int ndime = d.ndime;
+
+        const MatParams mp = MatParams::from(d.props[d.matno[e]]);
+        const MatCache& mc = d.mat_caches[d.matno[e]];
+
+        std::vector<std::vector<double>> elcod(ndime,
+                                               std::vector<double>(nnode, 0.0));
+        u_elem  .resize(2 * nnode);
+        phi_elem.resize(nnode);
+
+        for (int i = 0; i < nnode; ++i) {
+            const int node = nodes[i];
+            for (int dim = 0; dim < ndime; ++dim)
+                elcod[dim][i] = d.coord(node, dim);
+            u_elem(2 * i)     = u(2 * node);
+            u_elem(2 * i + 1) = u(2 * node + 1);
+            phi_elem(i)       = phi(node);
+        }
+
+        const auto gps = fem::gaussPoints(nnode, d.ngaus);
+        for (int g = 0; g < static_cast<int>(gps.size()); ++g) {
+            const fem::ShapeData sh = fem::shapeFunc(gps[g].xi, gps[g].eta, nnode);
+            const fem::Jacobian  J  = fem::jacob2(elcod, sh, nnode, ndime);
+            const double         dV = J.djacb * gps[g].w;
+
+            Eigen::VectorXd N(nnode);
+            for (int i = 0; i < nnode; ++i) N(i) = sh.Shape[i];
+
+            const Eigen::MatrixXd Bu   = fem::buildBu  (J.cartd, nnode);
+            const Eigen::MatrixXd Bphi = fem::buildBphi(J.cartd, ndime, nnode);
+
+            const double          phi_g    = N.dot(phi_elem);
+            const double          g_phi    = degradation(phi_g, mp.k);
+            const Eigen::VectorXd grad_phi = Bphi * phi_elem;
+
+            const Eigen::Vector3d eps = Bu * u_elem;
+            const EnergySplit     sp  = energySplit(eps, mc, d.split);
+
+            // Total elastic density psi = 1/2 eps^T C eps; the split is
+            // additive (psi = psi^+ + psi^-), so psi^- = psi - psi^+.
+            const double psi_tot   = 0.5 * eps.dot(mc.C * eps);
+            const double psi_plus  = sp.psi_plus;
+            const double psi_minus = psi_tot - psi_plus;
+
+            E.elastic  += (g_phi * psi_plus + psi_minus) * dV;
+            E.fracture += mp.Gc * ( phi_g * phi_g / (2.0 * mp.l0)
+                                  + 0.5 * mp.l0 * grad_phi.squaredNorm() ) * dV;
+        }
+    }
+    return E;
+}
+
 }  // namespace pfm

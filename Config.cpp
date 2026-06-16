@@ -298,6 +298,23 @@ void loadSolverSection(const toml::table& root, pfm::SolverSettings& s)
     int64_t ms = 0;
     if (readScalar<int64_t>(*tbl, "max_staggered", ms))
         s.max_staggered = static_cast<int>(ms);
+
+    // Outer staggered-cycle stopping criterion: "residual" (default) or
+    // "energy" (Ambati gamma criterion). Case-insensitive.
+    std::string stop;
+    if (readString(*tbl, "stagger_stop", stop)) {
+        for (auto& c : stop) c = static_cast<char>(std::tolower(c));
+        if (stop == "residual")
+            s.stagger_stop = pfm::StaggerStop::Residual;
+        else if (stop == "energy" || stop == "gamma" || stop == "energy_gamma")
+            s.stagger_stop = pfm::StaggerStop::EnergyGamma;
+        else
+            throw std::runtime_error(
+                "solver.stagger_stop must be \"residual\" or \"energy\" "
+                "(got \"" + stop + "\")");
+    }
+
+    readDouble(*tbl, "stagger_gamma_tol_deg", s.stagger_gamma_tol_deg);
 }
 
 void loadRunSection(const toml::table& root, AppConfig& cfg)
@@ -443,6 +460,12 @@ void validate(const AppConfig& cfg)
         cfg.solver.max_staggered <= 0)
         throw std::invalid_argument(
             "solver.max_staggered must be > 0 when solver.scheme = \"staggered\"");
+    if (cfg.solver.scheme == pfm::SolverScheme::Staggered &&
+        cfg.solver.stagger_stop == pfm::StaggerStop::EnergyGamma &&
+        cfg.solver.stagger_gamma_tol_deg <= 0.0)
+        throw std::invalid_argument(
+            "solver.stagger_gamma_tol_deg must be > 0 when "
+            "solver.stagger_stop = \"energy\"");
 }
 
 }  // namespace appcfg

@@ -11,7 +11,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -329,7 +331,28 @@ SolverResult solveStepStaggered(const FemInput&        d,
         std::cout << "[solver] STAGGERED  load_factor = " << load_factor
                   << "  (max " << settings.max_staggered << " sweeps)\n";
 
+    // Optional per-sweep energy history E^k (Ambati Sect. 3.4). Opened once on
+    // first use (the LU/LDLT factorizations above use the same static-state
+    // pattern); header written once; one row appended per sweep with the
+    // load_factor column so a single step's {E^k} can be filtered out later.
+    static std::ofstream energy_csv;
+    static bool          energy_csv_open = false;
+    if (!settings.energy_csv.empty() && !energy_csv_open) {
+        energy_csv.open(settings.energy_csv, std::ios::out | std::ios::trunc);
+        if (energy_csv)
+            energy_csv << "load_factor,sweep,E_total,E_elastic,E_fracture,R_norm\n";
+        energy_csv_open = true;
+    }
+
     double R0 = -1.0;
+
+    // Outer-cycle stopping criterion. The inner u/phi Newton sub-solves always
+    // use the residual tolerances; this only selects how the OUTER sweep loop
+    // decides it is done.
+    const bool   use_gamma = (settings.stagger_stop == StaggerStop::EnergyGamma);
+    constexpr double PI    = 3.14159265358979323846;  // M_PI is not portable (MSVC)
+    double E_first = 0.0;   // E^1  (first sweep of this cycle)
+    double E_prev  = 0.0;   // E^{k-1}
 
     for (int sweep = 0; sweep < settings.max_staggered; ++sweep) {
         // (a) displacement sub-solve with phi frozen
@@ -390,23 +413,77 @@ SolverResult solveStepStaggered(const FemInput&        d,
         res.iters_used     = sweep + 1;
         res.final_residual = Rn;
 
+        // Total energy of the current iterate E^k = E(u^k, phi^k). The natural
+        // scalar for monitoring staggered convergence (decreases monotonically
+        // toward the minimizer). Computed only when something consumes it
+        // (verbose print or the CSV log) to avoid the extra mesh pass otherwise.
+        const bool want_energy =
+            settings.verbose || !settings.energy_csv.empty() || use_gamma;
+        EnergyParts E;
+        if (want_energy) E = computeEnergy(d, u, phi);
+
+        if (energy_csv_open && energy_csv) {
+            energy_csv << load_factor << ',' << (sweep + 1) << ','
+                       << E.total() << ',' << E.elastic << ','
+                       << E.fracture << ',' << Rn << '\n';
+            energy_csv.flush();
+        }
+
+        // Normalized energy-slope angle gamma (Ambati Sect. 3.4), evaluated
+        // online at the current sweep N = sweep+1 using E^1, E^{k-1}, E^k:
+        //   gamma = atan( N * (E^{k-1}-E^k)/(E^1-E^k) ) * 180/pi.
+        // Needs at least 2 sweeps; a flat energy (negligible total drop) is
+        // treated as already at the minimizer.
+        double gamma_deg         = std::numeric_limits<double>::infinity();
+        bool   energy_converged  = false;
+        if (use_gamma) {
+            const double Ek = E.total();
+            if (sweep == 0) {
+                E_first = Ek;
+            } else {
+                const double num   = E_prev  - Ek;   // last-sweep energy drop
+                const double den   = E_first - Ek;   // total drop so far
+                const double floor = std::max(1e-30, 1e-12 * std::abs(E_first));
+                if (std::abs(den) <= floor) {
+                    energy_converged = true;         // energy flat -> converged
+                    gamma_deg        = 0.0;
+                } else {
+                    const int    N     = sweep + 1;
+                    const double slope = static_cast<double>(N) * num / den;
+                    gamma_deg          = std::atan(slope) * 180.0 / PI;
+                    energy_converged   = (gamma_deg <= settings.stagger_gamma_tol_deg);
+                }
+            }
+            E_prev = Ek;
+        }
+
         if (settings.verbose) {
             std::cout << "  solver sweep " << sweep
                       << "  |R| = " << Rn
                       << "   |R|/|R0| = " << (Rn / R0)
-                      << "   (u: " << ru.iters_used << " Newton it"
+                      << "   E = " << E.total();
+            if (use_gamma) std::cout << "   gamma = " << gamma_deg << " deg";
+            std::cout << "   (u: " << ru.iters_used << " Newton it"
                       << (ru.converged ? "" : ", NOT conv")
                       << ";  phi: " << rp.iters_used << " it"
                       << (rp.converged ? "" : ", NOT conv")
                       << ")\n";
         }
 
-        const double tol = std::max(settings.tol_abs, settings.tol_rel * R0);
-        if (Rn < tol) {
+        bool converged;
+        if (use_gamma) {
+            converged = energy_converged;            // needs sweep >= 1
+        } else {
+            const double tol = std::max(settings.tol_abs, settings.tol_rel * R0);
+            converged = (Rn < tol);
+        }
+        if (converged) {
             res.converged = true;
             if (settings.verbose)
                 std::cout << "[solver] staggered converged in "
-                          << (sweep + 1) << " sweeps\n";
+                          << (sweep + 1) << " sweeps "
+                          << (use_gamma ? "(gamma criterion)" : "(residual criterion)")
+                          << "\n";
             return res;
         }
     }
